@@ -9,3 +9,6 @@
 
 /infra/development/docker/osrm_data
 .idea/
+
+.cursor
+build
