@@ -2,90 +2,166 @@ package main
 
 import (
 	"context"
+	"echo-ride/pkg/common"
+	InitLogger "echo-ride/pkg/logger"
 	"echo-ride/pkg/tracing"
 	"echo-ride/services/ride-service/config"
 	"echo-ride/services/ride-service/internal/infrastructure/db"
 	"echo-ride/services/ride-service/internal/infrastructure/kafka"
-	"echo-ride/services/ride-service/pkg/logger"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"go.uber.org/zap"
 )
 
+const (
+	serviceName = "ride-service"
+)
+
 func main() {
+	os.Exit(initMain())
+}
+
+func initMain() int {
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		return 1
 	}
 
-	log := logger.InitLogger(cfg.Server.Mode)
-	defer log.Sync()
-	log.Info("Starting Ride Service", zap.String("mode", cfg.Server.Mode))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	tp, err := tracing.InitTracer("ride-service", cfg.Jaeger.AgentHost+":"+fmt.Sprint(cfg.Jaeger.AgentPort))
+	context.AfterFunc(ctx, stop)
+
+	logCfg := InitLogger.Config{
+		ServiceName: serviceName,
+		Version:     common.Version,
+		Env:         cfg.Server.Mode,
+		Level:       zap.InfoLevel,
+	}
+	if cfg.Otel.Endpoint != "" {
+		logCfg.OTLP = &InitLogger.OTLPConfig{
+			Endpoint: cfg.Otel.Endpoint,
+			Insecure: cfg.Otel.Insecure,
+		}
+	}
+
+	log, shutdownLog, err := InitLogger.New(ctx, logCfg)
 	if err != nil {
-		log.Fatal("Failed to init tracer", zap.Error(err))
+		fmt.Fprintf(os.Stderr, "init logger: %v\n", err)
+		return 1
 	}
 
 	defer func() {
-		if err := tp.Shutdown(context.Background()); err != nil {
-			log.Fatal("Failed to shutdown tracer", zap.Error(err))
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownLog(flushCtx)
+		_ = log.Sync()
+	}()
+
+	if err := run(ctx, cfg, log); err != nil {
+		log.Error("ride service terminated", zap.Error(err))
+		return 1
+	}
+	log.Info("ride service stopped gracefully")
+
+	return 0
+
+}
+
+func run(ctx context.Context, cfg *config.Config, log *zap.Logger) error {
+	log.Info("starting Ride Service", zap.String("mode", cfg.Server.Mode))
+
+	tp, err := tracing.Init(ctx, tracing.Config{
+		ServiceName: serviceName,
+		Version:     common.Version,
+		Env:         cfg.Server.Mode,
+		Endpoint:    net.JoinHostPort(cfg.Jaeger.AgentHost, strconv.Itoa(cfg.Jaeger.AgentPort)),
+		Insecure:    cfg.Otel.Insecure,
+		SampleRatio: cfg.Otel.TraceSampleRatio,
+	})
+	if err != nil {
+		return fmt.Errorf("init tracer: %w", err)
+	}
+	defer func() {
+		shCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tp.Shutdown(shCtx); err != nil {
+			log.Error("tracer shutdown failed", zap.Error(err))
 		}
 	}()
 
-	ctx, cancelDB := context.WithTimeout(context.Background(), 5*time.Second)
+	dbCtx, cancelDB := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelDB()
-
-	dbPool, err := db.NewPostgresPool(ctx, cfg.Database)
+	dbPool, err := db.NewPostgresPool(dbCtx, cfg.Database)
 	if err != nil {
-		log.Fatal("Failed to connect to database", zap.Error(err))
+		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	defer dbPool.Close()
-	log.Info("Database connection successful")
+	log.Info("database connection successful")
 
 	useCases := buildUseCases(dbPool, log)
 
-	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
-	defer cancelConsumer()
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 
 	rideConsumer := kafka.NewRideConsumer(cfg.Kafka, useCases.updateRide, log)
-	go rideConsumer.Start(consumerCtx)
 
-	e := newServer(useCases, log)
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		rideConsumer.Start(workerCtx)
+	}()
+	defer func() {
+		workerCancel()
+		select {
+		case <-consumerDone:
+		case <-time.After(5 * time.Second):
+			log.Warn("kafka consumer did not stop in time")
+		}
+		rideConsumer.Close()
+	}()
+
+	srv := newServer(useCases, log)
 
 	srvAddr := fmt.Sprintf(":%s", cfg.Server.Port)
-	s := http.Server{Addr: srvAddr, Handler: e}
+	httpSrv := http.Server{
+		Addr:              srvAddr,
+		Handler:           srv,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
+	errCh := make(chan error, 1)
 	go func() {
-		log.Info("Server is listening", zap.String("address", srvAddr))
-		if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal("Failed to start server", zap.Error(err))
+		log.Info("server is listening", zap.String("address", srvAddr))
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("failed to start server: %w", err)
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Info("Shutting down server...")
-
-	cancelConsumer()
-	if err := rideConsumer.Close(); err != nil {
-		log.Error("Failed to close kafka consumer", zap.Error(err))
+	var runErr error
+	select {
+	case <-ctx.Done():
+		log.Info("shut down Ride Service...")
+	case runErr = <-errCh:
+	case <-consumerDone:
+		runErr = errors.New("kafka consumer stopped unexpectedly")
 	}
 
-	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	ctxShutdown, cancelShutdown := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancelShutdown()
-
-	if err := s.Shutdown(ctxShutdown); err != nil {
-		log.Fatal("Server forced to shutdown", zap.Error(err))
+	if err := httpSrv.Shutdown(ctxShutdown); err != nil {
+		_ = httpSrv.Close()
+		runErr = errors.Join(runErr, fmt.Errorf("http shutdown: %w", err))
 	}
 
-	log.Info("Server exiting")
+	return runErr
 }
