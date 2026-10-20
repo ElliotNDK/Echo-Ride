@@ -37,8 +37,9 @@ type TripStatusPayload struct {
 }
 
 type RideConsumer struct {
-	reader      *kafka.Reader
-	notifyUC    application.NotifyUserUseCase
+	reader    *kafka.Reader
+	notifyUC  application.NotifyUserUseCase
+	dlqWriter *kafka.Writer
 	// trackingSub subscribes a rider's active WS connection to the Redis
 	// Pub/Sub channel for their ride as soon as the ride is accepted, so no
 	// location frames are lost between the "accepted" notification and the
@@ -61,8 +62,15 @@ func NewRideConsumer(
 		MaxBytes: 10e6,
 	})
 
+	dlqWriter := &kafka.Writer{
+		Addr:     kafka.TCP(cfg.Brokers...),
+		Topic:    cfg.Topic,
+		Balancer: &kafka.LeastBytes{},
+	}
+
 	return &RideConsumer{
 		reader:      reader,
+		dlqWriter:   dlqWriter,
 		notifyUC:    notifyUC,
 		trackingSub: trackingSub,
 		logger:      logger,
@@ -204,4 +212,9 @@ func (c *RideConsumer) handleTripStatusChange(ctx context.Context, m kafka.Messa
 	}
 
 	c.reader.CommitMessages(ctx, m)
+}
+
+func (c *RideConsumer) Close() error {
+	c.dlqWriter.Close()
+	return c.reader.Close()
 }

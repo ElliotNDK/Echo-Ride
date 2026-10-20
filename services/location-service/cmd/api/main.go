@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"echo-ride/pkg/common"
 	pb "echo-ride/pkg/grpc/location/v1"
+	InitLogger "echo-ride/pkg/logger"
 	"echo-ride/pkg/tracing"
 	"echo-ride/services/location-service/config"
 	"echo-ride/services/location-service/internal/application"
@@ -13,13 +15,13 @@ import (
 	cassandraInfra "echo-ride/services/location-service/internal/infrastructure/repository/cassandra"
 	grpcLocation "echo-ride/services/location-service/internal/presentation/grpc"
 	"echo-ride/services/location-service/internal/presentation/ws"
-	"echo-ride/services/location-service/pkg/logger"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -28,41 +30,94 @@ import (
 	"google.golang.org/grpc"
 )
 
+const (
+	serviceName = "location-service"
+)
+
 func main() {
+	os.Exit(initMain())
+}
+
+func initMain() int {
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Printf("Fatal error loading config: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		return 1
 	}
 
-	log := logger.InitLogger(cfg.Server.Mode)
-	defer log.Sync()
-	log.Info("Starting Location Service", zap.String("mode", cfg.Server.Mode))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	tp, err := tracing.InitTracer("location-service", cfg.Jaeger.AgentHost+":"+fmt.Sprint(cfg.Jaeger.AgentPort))
+	context.AfterFunc(ctx, stop)
+
+	logCfg := InitLogger.Config{
+		ServiceName: serviceName,
+		Version:     common.Version,
+		Env:         cfg.Server.Mode,
+		Level:       zap.InfoLevel,
+	}
+	if cfg.Otel.Endpoint != "" {
+		logCfg.OTLP = &InitLogger.OTLPConfig{
+			Endpoint: cfg.Otel.Endpoint,
+			Insecure: cfg.Otel.Insecure,
+		}
+	}
+
+	log, shutdownLog, err := InitLogger.New(ctx, logCfg)
 	if err != nil {
-		log.Fatal("Failed to init tracer", zap.Error(err))
+		fmt.Fprintf(os.Stderr, "init logger: %v\n", err)
+		return 1
 	}
 
 	defer func() {
-		if err := tp.Shutdown(context.Background()); err != nil {
-			log.Fatal("Failed to shutdown tracer", zap.Error(err))
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownLog(flushCtx)
+		_ = log.Sync()
+	}()
+
+	if err := run(ctx, cfg, log); err != nil {
+		log.Error("location service terminated", zap.Error(err))
+		return 1
+	}
+	log.Info("location service stopped gracefully")
+
+	return 0
+}
+
+func run(ctx context.Context, cfg *config.Config, log *zap.Logger) error {
+	log.Info("starting location service", zap.String("mode", cfg.Server.Mode))
+
+	tp, err := tracing.Init(ctx, tracing.Config{
+		ServiceName: serviceName,
+		Version:     common.Version,
+		Env:         cfg.Server.Mode,
+		Endpoint:    net.JoinHostPort(cfg.Jaeger.AgentHost, strconv.Itoa(cfg.Jaeger.AgentPort)),
+		Insecure:    cfg.Otel.Insecure,
+		SampleRatio: cfg.Otel.TraceSampleRatio,
+	})
+	if err != nil {
+		return fmt.Errorf("init tracer: %w", err)
+	}
+	defer func() {
+		shCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tp.Shutdown(shCtx); err != nil {
+			log.Error("tracer shutdown failed", zap.Error(err))
 		}
 	}()
 
-	redisClient, errRedis := redisInfra.NewRedisClient(cfg.Redis)
-	if errRedis != nil {
-		log.Fatal("Failed to create Redis client", zap.Error(errRedis))
-	}
-
-	if err := redisClient.Ping(context.Background()).Err(); err != nil {
-		log.Fatal("Failed to connect to Redis", zap.Error(err))
-	}
+	redisClient, _ := redisInfra.NewRedisClient(cfg.Redis)
 	defer redisClient.Close()
+	pingCtx, cancelPing := context.WithTimeout(ctx, 3*time.Second)
+	defer cancelPing()
+	if err := redisClient.Ping(pingCtx).Err(); err != nil {
+		return fmt.Errorf("failed to connect to Redis: %w", err)
+	}
 
 	cassandraSession, err := cassandra.NewCassandraSession(cfg.Cassandra, log)
 	if err != nil {
-		log.Fatal("Failed to create Cassandra session", zap.Error(err))
+		return fmt.Errorf("failed to create Cassandra sessionL: %w", err)
 	}
 	defer cassandraSession.Close()
 
@@ -72,7 +127,6 @@ func main() {
 	osrmClient := osrm.NewOSRMClient("http://localhost:5000")
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
-	defer workerCancel()
 
 	batcher := application.NewLocationBatcher(cassandraLocationRepo, redisLocationRepo, log)
 	go batcher.Start(workerCtx)
@@ -87,20 +141,41 @@ func main() {
 	notifyDriverUC := application.NewNotifyDriverUseCase(hub, log)
 	updateLocationUC := application.NewUpdateDriverLocationUseCase(batcher, hub, log)
 
-	locationConsumer := kafka.NewRideConsumer(cfg.Kafka, notifyDriverUC, hub, log)
-	go locationConsumer.Start(workerCtx)
+	rideConsumer := kafka.NewRideConsumer(cfg.Kafka, notifyDriverUC, hub, log)
+	//go rideConsumer.Start(workerCtx)
+
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		rideConsumer.Start(workerCtx)
+	}()
+	defer func() {
+		workerCancel()
+		select {
+		case <-consumerDone:
+		case <-time.After(5 * time.Second):
+			log.Warn("kafka consumer did not stop in time")
+		}
+		rideConsumer.Close()
+	}()
 
 	wsHandler := ws.NewHandler(hub, updateLocationUC, cfg.JWT.SecretKey, log)
 
 	e := newServer(wsHandler, log)
 
 	srvAddr := fmt.Sprintf(":%s", cfg.Server.Port)
-	s := http.Server{Addr: srvAddr, Handler: e}
+	httpSrv := &http.Server{
+		Addr:              srvAddr,
+		Handler:           e,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
+	errCh := make(chan error, 1)
 	go func() {
-		log.Info("Server is listening", zap.String("address", srvAddr))
-		if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal("Failed to start server", zap.Error(err))
+		log.Info("server is listening", zap.String("address", srvAddr))
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("failed to start server: %w", err)
 		}
 	}()
 
@@ -120,18 +195,21 @@ func main() {
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	log.Info("Shutting down Location Service...")
-
-	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelShutdown()
-
-	if err := s.Shutdown(ctxShutdown); err != nil {
-		log.Fatal("Server forced to shutdown", zap.Error(err))
+	var runErr error
+	select {
+	case <-ctx.Done():
+		log.Info("shut down Location Service...")
+	case runErr = <-errCh:
+	case <-consumerDone:
+		runErr = errors.New("kafka consumer stopped unexpectedly")
 	}
 
-	log.Info("Location Service stopped gracefully")
+	ctxShutdown, cancelShutdown := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancelShutdown()
+	if err := httpSrv.Shutdown(ctxShutdown); err != nil {
+		_ = httpSrv.Close()
+		runErr = errors.Join(runErr, fmt.Errorf("http shutdown: %w", err))
+	}
+
+	return runErr
 }
