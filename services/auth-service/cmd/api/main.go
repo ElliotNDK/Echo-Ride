@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"echo-ride/pkg/common"
+	InitLogger "echo-ride/pkg/logger"
 	"echo-ride/pkg/tracing"
 	"echo-ride/services/auth-service/config"
 	"echo-ride/services/auth-service/internal/application"
@@ -12,58 +14,117 @@ import (
 	"echo-ride/services/auth-service/internal/infrastructure/repository"
 	authMiddleware "echo-ride/services/auth-service/internal/presentation/middleware"
 	"echo-ride/services/auth-service/pkg/jwt"
-	"echo-ride/services/auth-service/pkg/logger"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"go.uber.org/zap"
 )
 
+const (
+	serviceName = "auth-service"
+)
+
 func main() {
+	os.Exit(initMain())
+}
+
+func initMain() int {
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		return 1
 	}
 
-	log := logger.InitLogger(cfg.Server.Mode)
-	defer log.Sync()
-	log.Info("Starting Auth Service", zap.String("mode", cfg.Server.Mode))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	tp, err := tracing.InitTracer("auth-service", cfg.Jaeger.AgentHost+":"+fmt.Sprint(cfg.Jaeger.AgentPort))
+	context.AfterFunc(ctx, stop)
+
+	logCfg := InitLogger.Config{
+		ServiceName: serviceName,
+		Version:     common.Version,
+		Env:         cfg.Server.Mode,
+		Level:       zap.InfoLevel,
+	}
+	if cfg.Otel.Endpoint != "" {
+		logCfg.OTLP = &InitLogger.OTLPConfig{
+			Endpoint: cfg.Otel.Endpoint,
+			Insecure: cfg.Otel.Insecure,
+		}
+	}
+
+	log, shutdownLog, err := InitLogger.New(ctx, logCfg)
 	if err != nil {
-		log.Fatal("Failed to init tracer", zap.Error(err))
+		fmt.Fprintf(os.Stderr, "init logger: %v\n", err)
+		return 1
+	}
+
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownLog(flushCtx)
+		_ = log.Sync()
+	}()
+
+	if err := run(ctx, cfg, log); err != nil {
+		log.Error("auth service terminated", zap.Error(err))
+		return 1
+	}
+	log.Info("auth service stopped gracefully")
+
+	return 0
+}
+
+func run(ctx context.Context, cfg *config.Config, log *zap.Logger) error {
+	log.Info("starting auth service", zap.String("mode", cfg.Server.Mode))
+
+	tp, err := tracing.Init(ctx, tracing.Config{
+		ServiceName: serviceName,
+		Version:     common.Version,
+		Env:         cfg.Server.Mode,
+		Endpoint:    net.JoinHostPort(cfg.Jaeger.AgentHost, strconv.Itoa(cfg.Jaeger.AgentPort)),
+		Insecure:    cfg.Otel.Insecure,
+		SampleRatio: cfg.Otel.TraceSampleRatio,
+	})
+	if err != nil {
+		return fmt.Errorf("init tracer: %w", err)
 	}
 	defer func() {
-		if err := tp.Shutdown(context.Background()); err != nil {
-			log.Fatal("Failed to shutdown tracer", zap.Error(err))
+		shCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tp.Shutdown(shCtx); err != nil {
+			log.Error("tracer shutdown failed", zap.Error(err))
 		}
 	}()
 
-	dbCtx, cancelDB := context.WithTimeout(context.Background(), 5*time.Second)
+	dbCtx, cancelDB := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelDB()
 	dbPool, err := db.NewPostgresPool(dbCtx, cfg.Database)
 	if err != nil {
-		log.Fatal("Failed to connect to database", zap.Error(err))
+		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	defer dbPool.Close()
-	log.Info("Database connection successful")
+	log.Info("database connection successful")
 
 	redisClient := redisInfra.NewRedisClient(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
-	if err := redisClient.Ping(context.Background()).Err(); err != nil {
-		log.Fatal("Failed to connect to Redis", zap.Error(err))
-	}
 	defer redisClient.Close()
+	pingCtx, cancelPing := context.WithTimeout(ctx, 3*time.Second)
+	defer cancelPing()
+	if err := redisClient.Ping(pingCtx).Err(); err != nil {
+		return fmt.Errorf("failed to connect to Redis: %w", err)
+	}
 	blacklist := redisInfra.NewBlacklist(redisClient)
 
 	userClient, err := grpcclient.NewUserServiceClient(cfg.UserService.GRPCAddr)
 	if err != nil {
-		log.Fatal("Failed to create user-service gRPC client", zap.Error(err))
+		return fmt.Errorf("failed to create user-service gRPC client: %w", err)
 	}
 	defer userClient.Close()
 
@@ -98,11 +159,22 @@ func main() {
 	jwtAuth := authMiddleware.JWTAuth(tokenMaker, blacklist)
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
-	defer workerCancel()
+	authConsumer := kafka.NewAuthConsumer(cfg.Kafka, cfg.Kafka.UserTopic, handleUserUC, log)
 
-	consumer := kafka.NewAuthConsumer(cfg.Kafka, cfg.Kafka.UserTopic, handleUserUC, log)
-	go consumer.Start(workerCtx)
-	defer consumer.Close()
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		authConsumer.Start(workerCtx)
+	}()
+	defer func() {
+		workerCancel()
+		select {
+		case <-consumerDone:
+		case <-time.After(5 * time.Second):
+			log.Warn("kafka consumer did not stop in time")
+		}
+		authConsumer.Close()
+	}()
 
 	srv := newServer(ServerConfig{
 		DBPool:     dbPool,
@@ -116,24 +188,36 @@ func main() {
 	})
 
 	srvAddr := fmt.Sprintf(":%s", cfg.Server.Port)
-	httpSrv := http.Server{Addr: srvAddr, Handler: srv}
+	httpSrv := http.Server{
+		Addr:              srvAddr,
+		Handler:           srv,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
+	errCh := make(chan error, 1)
 	go func() {
-		log.Info("Server is listening", zap.String("address", srvAddr))
+		log.Info("server is listening", zap.String("address", srvAddr))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal("Failed to start server", zap.Error(err))
+			errCh <- fmt.Errorf("failed to start server: %w", err)
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Info("Shutting down server...")
+	var runErr error
+	select {
+	case <-ctx.Done():
+		log.Info("shut down Auth Service...")
+	case runErr = <-errCh:
+	case <-consumerDone:
+		runErr = errors.New("kafka consumer stopped unexpectedly")
+	}
 
-	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	ctxShutdown, cancelShutdown := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancelShutdown()
 	if err := httpSrv.Shutdown(ctxShutdown); err != nil {
-		log.Error("Server forced to shutdown", zap.Error(err))
+		_ = httpSrv.Close()
+		runErr = errors.Join(runErr, fmt.Errorf("http shutdown: %w", err))
 	}
-	log.Info("Server exiting")
+
+	return runErr
 }

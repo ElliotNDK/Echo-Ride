@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -15,6 +16,7 @@ type Config struct {
 	Kafka     KafkaConfig     `yaml:"kafka"`
 	Grpc      GrpcConfig      `yaml:"grpc"`
 	Jaeger    JaegerConfig    `yaml:"jaeger"`
+	Otel      OtelConfig      `yaml:"otel"`
 	JWT       JWTConfig       `yaml:"jwt"`
 	Cassandra CassandraConfig `yaml:"cassandra"`
 	OSRM      OSRMConfig      `yaml:"osrm"`
@@ -47,6 +49,12 @@ type JaegerConfig struct {
 	AgentPort int    `yaml:"service_port" env:"LOCATION_JAEGER_AGENT_PORT" env-default:"4317" validate:"required"`
 }
 
+type OtelConfig struct {
+	Endpoint         string  `yaml:"endpoint" env:"LOCATION_OTEL_ENDPOINT" env-default:""`
+	Insecure         bool    `yaml:"insecure" env:"LOCATION_OTEL_INSECURE" env-default:"true"`
+	TraceSampleRatio float64 `env:"LOCATION_OTEL_TRACE_SAMPLE_RATIO" env-default:"1" validate:"gt=0,lte=1"`
+}
+
 type JWTConfig struct {
 	SecretKey      string `yaml:"secret" env:"LOCATION_JWT_SECRET" validate:"required"`
 	ExpirationTime int    `yaml:"expiration_time" env:"LOCATION_JWT_EXPIRATION_TIME" env-default:"1440" validate:"required"` // in minutes
@@ -65,26 +73,23 @@ type OSRMConfig struct {
 }
 
 func Load() (*Config, error) {
-	_ = godotenv.Load()
-
-	cfg := &Config{}
-
-	configPath := os.Getenv("LOCATION_CONFIG_PATH")
-	if configPath == "" {
-		configPath = "./config/config.dev.yml" // default fallback
+	envFile, explicit := os.LookupEnv("LOCATION_CONFIG_PATH")
+	if !explicit || envFile == "" {
+		envFile, explicit = ".env", false
 	}
 
-	err := cleanenv.ReadConfig(configPath, cfg)
-	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		if envErr := cleanenv.ReadEnv(cfg); envErr != nil {
-			return nil, fmt.Errorf("Error loading config from environment variables: %v\n", envErr)
+	if err := godotenv.Load(envFile); err != nil {
+		if explicit || !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("load env from %q: %w", envFile, err)
 		}
 	}
 
-	validate := validator.New()
-	if err := validate.Struct(cfg); err != nil {
-		return nil, fmt.Errorf("config validation error: %v", err)
+	cfg := &Config{}
+	if err := cleanenv.ReadEnv(cfg); err != nil {
+		return nil, fmt.Errorf("read config from env: %w", err)
+	}
+	if err := validator.New().Struct(cfg); err != nil {
+		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
 	return cfg, nil
