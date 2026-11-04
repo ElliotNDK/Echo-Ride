@@ -4,6 +4,7 @@ SERVICES := ride-service auth-service user-service location-service payment-serv
 help:
 	@echo "Usage: make [command] [service=<name>]"
 	@echo ""
+	@echo "  proto                               Generate protobuf and gRPC code"
 	@echo "  run service=ride-service            Run service"
 	@echo "  dev service=ride-service            Hot reload service"
 	@echo "  build service=ride-service          Build one service"
@@ -29,6 +30,10 @@ build-all:
 		echo "Building $$svc..."; \
 		$(MAKE) -C $$svc build || exit 1; \
 	done
+
+.PHONY: proto
+proto:
+	@./scripts/proto.sh
 
 # Docker
 COMPOSE_FILE := infra/development/docker/docker-compose.dev.yml

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package location.v1;
 
-option go_package = "Go-EchoRide/services/location-service/pkg-library/grpc/generated";
+option go_package = "proto-service/gen/location/v1;locationv1";
 
 service LocationService {
   rpc FindNearestDrivers(FindNearestDriversRequest) returns (FindNearestDriversResponse);
