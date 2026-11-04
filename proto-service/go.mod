@@ -1,4 +1,4 @@
-module proto-service
+module echo-ride/proto-service
 
 go 1.26.0
 

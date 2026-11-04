@@ -3,7 +3,7 @@ package grpc
 import (
 	"context"
 	"echo-ride/pkg-library/errs"
-	pb "echo-ride/pkg-library/grpc/location/v1"
+	pb "echo-ride/proto-service/gen/location/v1"
 	"echo-ride/services/location-service/internal/application"
 	"echo-ride/services/location-service/internal/domain"
 

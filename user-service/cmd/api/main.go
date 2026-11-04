@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"echo-ride/pkg-library/common"
-	pb "echo-ride/pkg-library/grpc/user/v1"
 	InitLogger "echo-ride/pkg-library/logger"
 	"echo-ride/pkg-library/tracing"
+	pb "echo-ride/proto-service/gen/user/v1"
 	"echo-ride/services/user-service/config"
 	"echo-ride/services/user-service/internal/application"
 	db "echo-ride/services/user-service/internal/infrastructure"

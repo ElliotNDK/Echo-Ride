@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	echo-ride/pkg-library v0.0.0
+	echo-ride/proto-service v0.0.0
 	github.com/exaring/otelpgx v0.13.0
 	github.com/go-playground/validator/v10 v10.30.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -64,3 +65,4 @@ require (
 )
 
 replace echo-ride/pkg-library => ../pkg-library
+replace echo-ride/proto-service => ../proto-service

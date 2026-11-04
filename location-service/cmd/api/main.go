@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"echo-ride/pkg-library/common"
-	pb "echo-ride/pkg-library/grpc/location/v1"
 	InitLogger "echo-ride/pkg-library/logger"
 	"echo-ride/pkg-library/tracing"
+	pb "echo-ride/proto-service/gen/location/v1"
 	"echo-ride/services/location-service/config"
 	"echo-ride/services/location-service/internal/application"
 	"echo-ride/services/location-service/internal/infrastructure/db/cassandra"

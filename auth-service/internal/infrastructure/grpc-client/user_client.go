@@ -3,7 +3,7 @@ package grpcclient
 import (
 	"context"
 	"echo-ride/pkg-library/errs"
-	pb "echo-ride/pkg-library/grpc/user/v1"
+	pb "echo-ride/proto-service/gen/user/v1"
 	"fmt"
 
 	"github.com/google/uuid"
