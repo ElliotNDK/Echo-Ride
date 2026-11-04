@@ -44,7 +44,7 @@ It combines REST APIs, WebSocket communication, gRPC, and event-driven workflows
 - `services/payment-service`  
   Minimal payment service scaffold for future expansion.
 
-- `pkg`  
+- `pkg-library`  
   Shared modules (for example: tracing, gRPC contracts, common helpers).
 
 ### Local Infrastructure
@@ -62,7 +62,7 @@ Defined in `infra/development/docker/docker-compose.dev.yml`:
 ├── go.mod
 ├── go.work
 ├── Makefile
-├── pkg/
+├── pkg-library/
 ├── services/
 │   ├── auth-service/
 │   ├── user-service/
@@ -207,7 +207,7 @@ bash scripts/apisix-script
 
 ## Observability
 
-- Shared tracing is initialized via `pkg/tracing`.
+- Shared tracing is initialized via `pkg-library/tracing`.
 - Key services (including `auth-service`, `user-service`, `ride-service`, and `location-service`) export traces to Jaeger.
 - Jaeger UI: `http://localhost:16686`
 

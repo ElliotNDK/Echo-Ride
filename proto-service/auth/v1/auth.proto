@@ -1,0 +1,1 @@
+option go_package = "proto-service/gen/auth/v1;authv1";

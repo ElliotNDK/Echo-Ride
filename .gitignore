@@ -13,3 +13,6 @@
 .cursor
 build
 .vscode
+
+tmp/
+gen/
