@@ -13,3 +13,5 @@
 .cursor
 build
 .vscode
+
+tmp/
