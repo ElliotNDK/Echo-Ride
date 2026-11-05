@@ -2,21 +2,31 @@ pre-commit:
   parallel: false
   commands:
     tidy:
-      files: git diff --cached --name-only HEAD
-      glob: "go.mod, go.sum"
-      run: go mod tidy && git add go.mod go.sum
+      glob:
+        - "go.mod"
+        - "go.sum"
+        - "**/go.mod"
+        - "**/go.sum"
+      run: bash scripts/tidy-staged-go-modules.sh
+
     format:
-      glob: "*.go"
-      run: goimports -w {staged_files} && git add {staged_files}
+      glob:
+        - "*.go"
+        - "**/*.go"
+      run: goimports -w {staged_files}
+      stage_fixed: true
+
     lint:
-      glob: "*.go"
-      run: golangci-lint run --new-from-rev HEAD ./...
+      glob:
+        - "*.go"
+        - "**/*.go"
+      run: bash scripts/lint-staged-go-modules.sh
 
 commit-msg:
   commands:
     validate-message:
       run: |
-        head -n1 {1} | grep -E "^(feat|fix|docs|style|refactor|perf|test|chore|revert)\(GER-[0-9]+\): .+$"
+        head -n1 "{1}" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|chore|revert)(\(GER-[0-9]+\))?: .+$'
       errorMessage: |
         Wrong commit message format.
         Please use the Conventional Commits format:
