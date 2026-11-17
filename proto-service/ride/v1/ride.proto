@@ -1,1 +1,2 @@
 option go_package = "proto-service/gen/ride/v1;ridev1";
+option go_package = "proto-service/gen/ride/v1;ridev1";

@@ -4,7 +4,7 @@ import (
 	"context"
 	"echo-ride/pkg-library/errs"
 	"echo-ride/services/auth-service/internal/domain"
-	"echo-ride/services/auth-service/pkg/hash"
+	"echo-ride/services/auth-service/utils/hash"
 	"encoding/json"
 	"time"
 

@@ -24,6 +24,21 @@ $(SERVICE_TARGETS):
 	@[ "$(service)" ] || (echo "Usage: make $@ service=<service-name>"; exit 1)
 	@$(MAKE) -C $(service) $@ name=$(name)
 
+COMPOSE_KC := docker compose \
+	-f docker/docker-compose.dev.yml \
+	-f docker/docker-compose.keycloak.yml
+
+.PHONY: keycloak-up keycloak-logs keycloak-down
+
+keycloak-up:
+	$(COMPOSE_KC) up -d --build postgres keycloak
+
+keycloak-logs:
+	$(COMPOSE_KC) logs -f keycloak
+
+keycloak-down:
+	$(COMPOSE_KC) stop keycloak
+
 .PHONY: build-all
 build-all:
 	@for svc in $(SERVICES); do \

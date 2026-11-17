@@ -5,7 +5,7 @@ import (
 	"echo-ride/pkg-library/errs"
 	"echo-ride/services/auth-service/internal/domain"
 	"echo-ride/services/auth-service/internal/infrastructure/redis"
-	"echo-ride/services/auth-service/pkg/jwt"
+	"echo-ride/services/auth-service/utils/jwt"
 	"time"
 
 	"go.uber.org/zap"

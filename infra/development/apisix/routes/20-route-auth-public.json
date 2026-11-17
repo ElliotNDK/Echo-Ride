@@ -1,6 +1,0 @@
-{
-  "uri": "/api/v1/auth/*",
-  "methods": ["POST"],
-  "vars": [["uri", "~~", "^/api/v1/auth/(register|login|refresh)$"]],
-  "upstream_id": "auth-service"
-}

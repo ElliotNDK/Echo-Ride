@@ -7,7 +7,7 @@
 !**/*.env.sample
 
 
-/infra/development/docker/osrm_data
+/docker/osrm_data
 .idea/
 
 .cursor
@@ -15,4 +15,5 @@ build
 .vscode
 
 tmp/
+gen/
 gen/

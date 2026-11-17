@@ -49,7 +49,7 @@ It combines REST APIs, WebSocket communication, gRPC, and event-driven workflows
 
 ### Local Infrastructure
 
-Defined in `infra/development/docker/docker-compose.dev.yml`:
+Defined in `docker`:
 
 - Gateway: `etcd`, `apisix`, `apisix-dashboard`
 - Data and messaging: `postgres`, `redis`, `kafka`, `debezium`, `cassandra`
@@ -170,7 +170,7 @@ The script `scripts/apisix-script` bootstraps:
 - Protected ride route: `/api/v1/rides*` with JWT + header injection for `X-User-Id` / `X-User-Role`
 - WebSocket proxy route: `/ws*` (upstream `location-service`)
 
-For routes that also cover `user-service`, split public auth (`register` / `login` / `refresh`) vs JWT-protected paths, and the same header injection pattern, use `infra/development/apisix/apisix_admin_setup.sh` (see `infra/development/apisix/routes/` and `inject_user_headers.lua`; requires `jq` and `envsubst`).
+For routes that also cover `user-service`, split public auth (`register` / `login` / `refresh`) vs JWT-protected paths, and the same header injection pattern, use `gateway-service/apisix` (see `gateway-service/apisix` and `inject_user_headers.lua`; requires `jq` and `envsubst`).
 
 Usage:
 

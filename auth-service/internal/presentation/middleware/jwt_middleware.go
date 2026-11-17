@@ -3,7 +3,7 @@ package middleware
 import (
 	"echo-ride/pkg-library/errs"
 	"echo-ride/services/auth-service/internal/infrastructure/redis"
-	"echo-ride/services/auth-service/pkg/jwt"
+	"echo-ride/services/auth-service/utils/jwt"
 	"strings"
 
 	"github.com/labstack/echo/v5"
