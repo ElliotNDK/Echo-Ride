@@ -1,4 +1,0 @@
-{
-  "type": "roundrobin",
-  "nodes": { "${RIDE_HOST}:${RIDE_PORT}": 1 }
-}

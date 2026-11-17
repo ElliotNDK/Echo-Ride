@@ -1,1 +1,44 @@
 option go_package = "proto-service/gen/auth/v1;authv1";
+syntax = "proto3";
+
+package auth.v1;
+
+option go_package = "proto-service/gen/auth/v1;authv1";
+
+service AuthService {
+  rpc SignUp(SignUpRequest) returns (SignUpResponse);
+  rpc LoginWithPassword(LoginWithPasswordRequest) returns (LoginWithPasswordResponse);
+}
+
+message SignUpRequest {
+  string email = 1;
+  string user_name = 2;
+  string password = 3;
+}
+
+message SignUpResponse {}
+
+message LoginWithPasswordRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message AuthUser {
+  string id = 1;
+  string email = 2;
+  string user_name = 3;
+  repeated string roles = 4;
+}
+
+message TokenPair {
+  string access_token = 1;
+  string refresh_token = 2;
+  string token_type = 3; // Bearer
+  string expires_in = 4; // seconds
+  string refresh_expires_in  = 5; // seconds
+}
+
+message LoginWithPasswordResponse {
+  TokenPair credentials = 1;
+  AuthUser user = 2;
+}

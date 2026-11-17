@@ -1,0 +1,124 @@
+# The trailing #END is mandatory: APISIX ignores the file without it.
+# ${{VAR}} placeholders are read from the container environment at startup.
+
+global_rules:
+  - id: observability
+    plugins:
+      prometheus:
+        prefer_name: true
+      request-id:
+        include_in_response: true
+
+consumers:
+  - username: echo_ride
+    plugins:
+      jwt-auth:
+        key: echo-ride            # must match the token's "key" claim (see notes)
+        secret: "${{JWT_SECRET}}"
+
+upstreams:
+  - id: auth-service
+    type: roundrobin
+    nodes: { "${{AUTH_UPSTREAM}}": 1 }
+    timeout: { connect: 3, send: 15, read: 15 }
+  - id: user-service
+    type: roundrobin
+    nodes: { "${{USER_UPSTREAM}}": 1 }
+    timeout: { connect: 3, send: 15, read: 15 }
+  - id: ride-service
+    type: roundrobin
+    nodes: { "${{RIDE_UPSTREAM}}": 1 }
+    timeout: { connect: 3, send: 15, read: 30 }
+  - id: location-service            # WebSocket: long idle read timeout
+    type: roundrobin
+    nodes: { "${{LOCATION_UPSTREAM}}": 1 }
+    timeout: { connect: 3, send: 60, read: 3600 }
+
+# Shared by every protected route. The Lua runs after jwt-auth, because
+# serverless-post-function has a lower priority (-2000) than auth plugins.
+# It overwrites X-User-* from the verified token, so client-forged values
+# never reach your services.
+plugin_configs:
+  - id: jwt-protected
+    plugins:
+      jwt-auth: {}
+      serverless-post-function:
+        phase: rewrite
+        functions:
+          - |
+            return function(conf, ctx)
+              local core = require("apisix.core")
+              local jwt = require("resty.jwt")
+
+              -- header first; ?jwt= / cookie as fallback (browsers can't set
+              -- headers on WebSocket handshakes)
+              local auth = core.request.header(ctx, "Authorization") or ""
+              local token = auth:match("^[Bb]earer%s+(.+)$")
+                         or ctx.var.arg_jwt or ctx.var.cookie_jwt
+              if not token then
+                return core.response.exit(401, { message = "missing token" })
+              end
+
+              -- Signature was already verified by jwt-auth; we only parse here.
+              local obj = jwt:load_jwt(token)
+              local claims = obj and obj.payload
+              if not claims or not claims.sub then
+                return core.response.exit(401, { message = "invalid token" })
+              end
+
+              core.request.set_header(ctx, "X-User-Id", tostring(claims.sub))
+              core.request.set_header(ctx, "X-User-Role", tostring(claims.role or ""))
+            end
+
+routes:
+  - id: healthz
+    uri: /healthz
+    plugins:
+      serverless-pre-function:
+        phase: rewrite
+        functions:
+          - |
+            return function() ngx.say("ok"); return ngx.exit(200) end
+
+  - id: auth-public
+    uris: [/api/v1/auth/register, /api/v1/auth/login, /api/v1/auth/refresh]
+    methods: [POST]
+    upstream_id: auth-service
+    plugins:
+      proxy-rewrite:
+        headers:
+          remove: [X-User-Id, X-User-Role]   # never trust client-sent identity
+      limit-count:                           # brute-force protection; tune it
+        count: 20
+        time_window: 60
+        key_type: var
+        key: remote_addr
+        rejected_code: 429
+
+  - id: auth-logout
+    uri: /api/v1/auth/logout
+    methods: [POST]
+    upstream_id: auth-service
+    plugin_config_id: jwt-protected
+
+  - id: users
+    uris: [/api/v1/users, /api/v1/users/*]
+    upstream_id: user-service
+    plugin_config_id: jwt-protected
+
+  - id: admin-users
+    uris: [/api/v1/admin/users, /api/v1/admin/users/*]
+    upstream_id: user-service
+    plugin_config_id: jwt-protected
+
+  - id: rides
+    uris: [/api/v1/rides, /api/v1/rides/*]
+    upstream_id: ride-service
+    plugin_config_id: jwt-protected
+
+  - id: ws-location
+    uri: /ws
+    enable_websocket: true
+    upstream_id: location-service
+    plugin_config_id: jwt-protected
+#END

@@ -1,9 +1,0 @@
-{
-  "uri": "/ws",
-  "methods": ["GET"],
-  "upstream_id": "location-service",
-  "enable_websocket": true,
-  "plugins": {
-    "jwt-auth": {}
-  }
-}

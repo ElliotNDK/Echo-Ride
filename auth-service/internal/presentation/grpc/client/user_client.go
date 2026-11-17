@@ -1,9 +1,9 @@
-package grpcclient
+package client
 
 import (
 	"context"
 	"echo-ride/pkg-library/errs"
-	pb "echo-ride/proto-service/gen/user/v1"
+	protoUserV1 "echo-ride/proto-service/gen/user/v1"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -23,8 +23,8 @@ type UserServiceClient interface {
 }
 
 type userServiceClient struct {
-	conn *grpc.ClientConn
-	c    pb.UserServiceClient
+	conn        *grpc.ClientConn
+	userService protoUserV1.UserServiceClient
 }
 
 func NewUserServiceClient(addr string) (UserServiceClient, error) {
@@ -37,13 +37,13 @@ func NewUserServiceClient(addr string) (UserServiceClient, error) {
 		return nil, fmt.Errorf("failed to dial user-service grpc at %s: %w", addr, err)
 	}
 	return &userServiceClient{
-		conn: conn,
-		c:    pb.NewUserServiceClient(conn),
+		conn:        conn,
+		userService: protoUserV1.NewUserServiceClient(conn),
 	}, nil
 }
 
 func (u *userServiceClient) GetUserAuthInfo(ctx context.Context, userID uuid.UUID) (*UserAuthInfo, error) {
-	resp, err := u.c.GetUserAuthInfo(ctx, &pb.GetUserAuthInfoRequest{UserId: userID.String()})
+	resp, err := u.userService.GetUserAuthInfo(ctx, &protoUserV1.GetUserAuthInfoRequest{UserId: userID.String()})
 	if err != nil {
 		return nil, errs.ErrServiceCallFailed.WithMessage("user-service GetUserAuthInfo failed").WithRootErr(err)
 	}

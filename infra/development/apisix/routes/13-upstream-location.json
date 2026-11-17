@@ -1,4 +1,0 @@
-{
-  "type": "roundrobin",
-  "nodes": { "${LOCATION_HOST}:${LOCATION_PORT}": 1 }
-}

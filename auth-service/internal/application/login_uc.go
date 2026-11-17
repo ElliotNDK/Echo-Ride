@@ -4,9 +4,9 @@ import (
 	"context"
 	"echo-ride/pkg-library/errs"
 	"echo-ride/services/auth-service/internal/domain"
-	grpcclient "echo-ride/services/auth-service/internal/infrastructure/grpc-client"
-	"echo-ride/services/auth-service/pkg/hash"
-	"echo-ride/services/auth-service/pkg/jwt"
+	grpcclient "echo-ride/services/auth-service/internal/presentation/grpc/client"
+	"echo-ride/services/auth-service/utils/hash"
+	"echo-ride/services/auth-service/utils/jwt"
 	"time"
 
 	"go.uber.org/zap"

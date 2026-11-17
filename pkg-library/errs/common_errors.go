@@ -18,4 +18,5 @@ var (
 	// Location service specific errors
 	ErrInvalidDriverID        = NewAppError(400, "Invalid driver ID", "invalid_driver_id")
 	ErrWebsocketUpgradeFailed = NewAppError(500, "Failed to upgrade to websocket", "websocket_upgrade_failed")
+	ErrInvalidEmail           = NewAppError(400, "Invalid email", "invalid_email")
 )
